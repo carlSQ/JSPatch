@@ -135,6 +135,7 @@ static NSString *_scriptRootDir;
 static NSMutableSet *_runnedScript;
 
 static NSMutableDictionary *_JSOverideMethods;
+static NSMutableDictionary *_JSOrigMethods;
 static NSMutableDictionary *_TMPMemoryPool;
 static NSMutableDictionary *_propKeys;
 static NSMutableDictionary *_JSMethodSignatureCache;
@@ -630,6 +631,15 @@ static NSDictionary *defineClass(NSString *classDeclaration, JSValue *instanceMe
     return @{@"cls": className, @"superCls": superClassName};
 }
 
+static BOOL isMsgForwardIMP(IMP impl) {
+  return impl == _objc_msgForward
+#if !defined(__arm64__)
+  || impl == (IMP)_objc_msgForward_stret
+#endif
+  ;
+}
+
+
 static JSValue *getJSFunctionInObjectHierachy(id slf, NSString *selectorName)
 {
     Class cls = object_getClass(slf);
@@ -933,6 +943,10 @@ static void JPExecuteORIGForwardInvocation(id slf, SEL selector, NSInvocation *i
             return;
         }
         NSInvocation *forwardInv= [NSInvocation invocationWithMethodSignature:methodSignature];
+        if (isMsgForwardIMP(class_getMethodImplementation([slf class],invocation.selector)) && _JSOrigMethods[[slf class]][NSStringFromSelector(invocation.selector)]) {
+            invocation.selector = NSSelectorFromString([NSStringFromSelector(invocation.selector) substringFromIndex:4]);
+        }
+
         [forwardInv setTarget:slf];
         [forwardInv setSelector:origForwardSelector];
         [forwardInv setArgument:&invocation atIndex:2];
@@ -945,6 +959,16 @@ static void JPExecuteORIGForwardInvocation(id slf, SEL selector, NSInvocation *i
         superForwardIMP(slf, @selector(forwardInvocation:), invocation);
     }
 }
+
+static void _initJPOrigMethods(Class cls) {
+  if (!_JSOrigMethods) {
+    _JSOrigMethods = [[NSMutableDictionary alloc] init];
+  }
+  if (!_JSOrigMethods[cls]) {
+    _JSOrigMethods[(id<NSCopying>)cls] = [[NSMutableDictionary alloc] init];
+  }
+}
+
 
 static void _initJPOverideMethods(Class cls) {
     if (!_JSOverideMethods) {
@@ -992,6 +1016,9 @@ static void overrideMethod(Class cls, NSString *selectorName, JSValue *function,
         SEL originalSelector = NSSelectorFromString(originalSelectorName);
         if(!class_respondsToSelector(cls, originalSelector)) {
             class_addMethod(cls, originalSelector, originalImp, typeDescription);
+            _initJPOrigMethods(cls);
+            _JSOrigMethods[cls][originalSelectorName] = @(YES);
+
         }
     }
     
